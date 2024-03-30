@@ -1,0 +1,88 @@
+/* In the normal, non-wrapper case, add a standard message to each deferred
+address if there hasn't been an error, that is, if it hasn't actually been
+tried this time. The variable "expired" will be FALSE if any deliveries were
+actually tried, or if there was at least one host that was not expired. That
+is, it is TRUE only if no deliveries were tried and all hosts were expired. If
+a delivery has been tried, an error code will be set, and the failing of the
+message is handled by the retry code later.
+
+If queue_smtp is set, or this transport was called to send a subsequent message
+down an existing TCP/IP connection, and something caused the host not to be
+found, we end up here, but can detect these cases and handle them specially. */
+
+for (address_item * addr = addrlist; addr; addr = addr->next)
+  {
+  /* If host is not NULL, it means that we stopped processing the host list
+  because of hosts_max_try or hosts_max_try_hardlimit. In the former case, this
+  means we need to behave as if some hosts were skipped because their retry
+  time had not come. Specifically, this prevents the address from timing out.
+  However, if we have hit hosts_max_try_hardlimit, we want to behave as if all
+  hosts were tried. */
+
+  if (host)
+    if (total_hosts_tried >= ob->hosts_max_try_hardlimit)
+      {
+      DEBUG(D_transport)
+        debug_printf("hosts_max_try_hardlimit reached: behave as if all "
+          "hosts were tried\n");
+      }
+    else
+      {
+      DEBUG(D_transport)
+        debug_printf("hosts_max_try limit caused some hosts to be skipped\n");
+      setflag(addr, af_retry_skipped);
+      }
+
+  if (f.queue_smtp)    /* no deliveries attempted */
+    {
+    addr->transport_return = DEFER;
+    addr->basic_errno = 0;
+    addr->message = US"SMTP delivery explicitly queued";
+    }
+
+  else if (  addr->transport_return == DEFER
+	  && (addr->basic_errno == ERRNO_UNKNOWNERROR || addr->basic_errno == 0)
+	  && !addr->message
+	  )
+    {
+    addr->basic_errno = ERRNO_HRETRY;
+    if (continue_hostname)
+      addr->message = US"no host found for existing SMTP connection";
+    else if (expired)
+      {
+      setflag(addr, af_pass_message);   /* This is not a security risk */
+      addr->message = string_sprintf(
+	"all hosts%s have been failing for a long time %s",
+	addr->domain ? string_sprintf(" for '%s'", addr->domain) : US"",
+        ob->delay_after_cutoff
+	? US"(and retry time not reached)"
+	: US"and were last tried after this message arrived");
+
+      /* If we are already using fallback hosts, or there are no fallback hosts
+      defined, convert the result to FAIL to cause a bounce. */
+
+      if (addr->host_list == addr->fallback_hosts || !addr->fallback_hosts)
+        addr->transport_return = FAIL;
+      }
+    else
+      {
+      const char * s;
+      if (hosts_retry == hosts_total)
+        s = "retry time not reached for any host%s";
+      else if (hosts_fail == hosts_total)
+        s = "all host address lookups%s failed permanently";
+      else if (hosts_defer == hosts_total)
+        s = "all host address lookups%s failed temporarily";
+      else if (hosts_serial == hosts_total)
+        s = "connection limit reached for all hosts%s";
+      else if (hosts_fail+hosts_defer == hosts_total)
+        s = "all host address lookups%s failed";
+      else
+        s = "some host address lookups failed and retry time "
+        "not reached for other hosts or connection limit reached%s";
+
+      addr->message = string_sprintf(s,
+	addr->domain ? string_sprintf(" for '%s'", addr->domain) : US"");
+      }
+    }
+  }
