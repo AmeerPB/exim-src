@@ -1,1 +1,1 @@
-** Exim source code for testing purpose
+** Exim Prototype source code for testing purpose
